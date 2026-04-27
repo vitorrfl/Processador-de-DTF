@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+
+# PyInstaller artifacts
+build/
+dist/
+*.manifest
+*.spec.bak
+
+# Inno Setup output
+installer_output/
+
+# ImageMagick portable (download separadamente — ~230 MB, instruções no README)
+vendor/ImageMagick/
+
+# IDE / OS
+.vscode/
+.idea/
+.claude/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
