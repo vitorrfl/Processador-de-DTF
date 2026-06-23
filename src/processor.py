@@ -1,5 +1,6 @@
 """Core batch processing logic. Runs in a worker thread."""
 from __future__ import annotations
+import io
 import shutil
 import tempfile
 import threading
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import fitz  # PyMuPDF
+from PIL import Image
 
 from .magick import MagickError, find_magick, run_magick
 from .utils import (
@@ -33,6 +35,14 @@ class CartoonSettings:
 
 
 @dataclass
+class RemoveBgSettings:
+    """Modo dedicado: remove fundo sólido (branco ou preto) e troca branco 255->252."""
+    background_color: str = "black"             # "white" | "black" -> cor do fundo a remover
+    remove_near: bool = True                    # True -> fuzz 5%, False -> fuzz 0%
+    swap_absolute_white: bool = True            # 255,255,255 -> 252,252,252
+
+
+@dataclass
 class ScannedSettings:
     fuzz_level: int = 2          # 1=0%, 2=8%, 3=15%, 4=22%
     extra_cleanup: bool = True
@@ -50,11 +60,12 @@ class DirtyPaperSettings:
 class ProcessJob:
     input_folder: Path
     output_folder: Path
-    mode: str                     # "cartoon" | "scanned" | "dirty"
+    mode: str                     # "cartoon" | "scanned" | "dirty" | "removebg"
     pdf_dpi: int = 300
     cartoon: CartoonSettings = field(default_factory=CartoonSettings)
     scanned: ScannedSettings = field(default_factory=ScannedSettings)
     dirty: DirtyPaperSettings = field(default_factory=DirtyPaperSettings)
+    removebg: RemoveBgSettings = field(default_factory=RemoveBgSettings)
 
 
 @dataclass
@@ -88,6 +99,33 @@ def _build_mogrify_args_cartoon(s: CartoonSettings) -> List[str]:
     ]
     if s.swap_absolute_white:
         args += [
+            "-channel", "rgba",
+            "-fill", "rgb(252,252,252)",
+            "-opaque", "rgb(255,255,255)",
+        ]
+    return args
+
+
+def _build_mogrify_args_removebg(s: RemoveBgSettings) -> List[str]:
+    """
+    Modo dedicado de remoção de fundo sólido. Diferente do Cartoon (que usa
+    floodfill a partir do canto), aqui removemos a cor do fundo na imagem
+    INTEIRA via -transparent, então o preto/branco preso dentro das letras
+    também some e não fica a "linha" da fronteira do floodfill.
+
+    Opcionalmente troca branco puro 255 -> 252.
+    """
+    fuzz = "15%" if s.remove_near else "0%"
+    bg = "black" if s.background_color == "black" else "white"
+    args: List[str] = [
+        "-alpha", "set",
+        "-fuzz", fuzz,
+        "-transparent", bg,
+    ]
+    if s.swap_absolute_white:
+        # fuzz de volta a 0 para trocar APENAS o branco puro 255,255,255 por 252.
+        args += [
+            "-fuzz", "0%",
             "-channel", "rgba",
             "-fill", "rgb(252,252,252)",
             "-opaque", "rgb(255,255,255)",
@@ -133,6 +171,8 @@ def build_ops(job: ProcessJob) -> List[str]:
         return _build_mogrify_args_scanned(job.scanned)
     if job.mode == "dirty":
         return _build_mogrify_args_dirty(job.dirty)
+    if job.mode == "removebg":
+        return _build_mogrify_args_removebg(job.removebg)
     raise ValueError(f"Modo desconhecido: {job.mode}")
 
 
@@ -149,7 +189,15 @@ def rasterize_pdf(pdf_path: Path, out_dir: Path, dpi: int, log) -> List[Path]:
         for i, page in enumerate(doc):
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             out = out_dir / f"{stem}-pagina-{i:03d}.png"
-            pix.save(out)
+            # MuPDF anti-aliases the page boundary, leaving a 1px gray frame on the
+            # bottom/right edges. That gray is neither black nor white, so no mode's
+            # background removal catches it and it shows up as a thin line exactly at
+            # the canvas edge. Shave a 1px border to drop it before processing.
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            w, h = img.size
+            if w > 2 and h > 2:
+                img = img.crop((1, 1, w - 1, h - 1))
+            img.save(out)
             produced.append(out)
             log(f"   PDF {pdf_path.name} · pág {i+1}/{len(doc)} → {out.name}")
     return produced

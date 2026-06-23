@@ -18,6 +18,7 @@ from .processor import (
     ProcessJob,
     ProcessReport,
     Processor,
+    RemoveBgSettings,
     ScannedSettings,
 )
 from .utils import count_files, resolve_output_folder
@@ -168,7 +169,7 @@ class App(ctk.CTk):
         self.mode_var = ctk.StringVar(value="cartoon")
         seg = ctk.CTkSegmentedButton(
             body,
-            values=["Cartoon / IA", "Escaneado", "Papel sujo"],
+            values=["Cartoon / IA", "Escaneado", "Papel sujo", "Remover fundo"],
             command=self._on_mode_change,
         )
         seg.set("Cartoon / IA")
@@ -191,6 +192,26 @@ class App(ctk.CTk):
         self.cartoon_swap_white = ctk.CTkSwitch(self._cartoon_f, text="Trocar branco absoluto (255) por 252")
         self.cartoon_swap_white.select()
         self.cartoon_swap_white.grid(row=2, column=0, sticky="w", pady=4)
+
+        # Remove background frame (modo dedicado)
+        self._removebg_f = ctk.CTkFrame(self._mode_area, fg_color="transparent")
+        self._removebg_f.grid_columnconfigure(0, weight=1)
+        rbg_row = ctk.CTkFrame(self._removebg_f, fg_color="transparent")
+        rbg_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        rbg_row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(rbg_row, text="Cor do fundo a remover:").grid(row=0, column=0, sticky="w")
+        self.removebg_color = ctk.CTkOptionMenu(rbg_row, values=["Preto (letra branca)", "Branco (letra escura)"])
+        self.removebg_color.set("Preto (letra branca)")
+        self.removebg_color.grid(row=0, column=1, sticky="e")
+        self.removebg_near = ctk.CTkSwitch(self._removebg_f, text="Remover tons próximos da cor do fundo (fuzz 5%)")
+        self.removebg_near.select()
+        self.removebg_near.grid(row=1, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(self._removebg_f,
+                     text="Desligado: remove só a cor pura do fundo (fuzz 0%).",
+                     text_color="#9AA0A6", justify="left", wraplength=400).grid(row=2, column=0, sticky="w", pady=(0, 6))
+        self.removebg_swap_white = ctk.CTkSwitch(self._removebg_f, text="Trocar branco absoluto (255) por 252")
+        self.removebg_swap_white.select()
+        self.removebg_swap_white.grid(row=3, column=0, sticky="w", pady=4)
 
         # Scanned frame
         self._scanned_f = ctk.CTkFrame(self._mode_area, fg_color="transparent")
@@ -261,19 +282,22 @@ class App(ctk.CTk):
     # ---- Mode helpers ---------------------------------------------------
 
     def _on_mode_change(self, value: str):
-        mapping = {"Cartoon / IA": "cartoon", "Escaneado": "scanned", "Papel sujo": "dirty"}
+        mapping = {"Cartoon / IA": "cartoon", "Escaneado": "scanned",
+                   "Papel sujo": "dirty", "Remover fundo": "removebg"}
         self._show_mode(mapping[value])
 
     def _show_mode(self, mode: str):
-        for f in (self._cartoon_f, self._scanned_f, self._dirty_f):
+        for f in (self._cartoon_f, self._scanned_f, self._dirty_f, self._removebg_f):
             f.grid_forget()
         self.mode_var.set(mode)
         if mode == "cartoon":
             self._cartoon_f.grid(row=0, column=0, sticky="nsew")
         elif mode == "scanned":
             self._scanned_f.grid(row=0, column=0, sticky="nsew")
-        else:
+        elif mode == "dirty":
             self._dirty_f.grid(row=0, column=0, sticky="nsew")
+        else:
+            self._removebg_f.grid(row=0, column=0, sticky="nsew")
 
     def _toggle_reinforce(self):
         state = "normal" if self.scanned_reinforce.get() else "disabled"
@@ -322,9 +346,11 @@ class App(ctk.CTk):
         job = ProcessJob(input_folder=inp, output_folder=out, mode=mode, pdf_dpi=dpi)
 
         if mode == "cartoon":
+            bg_color = "black" if self.cartoon_bg_color.get().startswith("Preto") else "white"
             job.cartoon = CartoonSettings(
                 remove_background_near_white=bool(self.cartoon_remove_bg.get()),
                 swap_absolute_white=bool(self.cartoon_swap_white.get()),
+                background_color=bg_color,
             )
         elif mode == "scanned":
             job.scanned = ScannedSettings(
@@ -333,10 +359,17 @@ class App(ctk.CTk):
                 reinforce_strokes=bool(self.scanned_reinforce.get()),
                 reinforce_level=int(self.scanned_level.get()[0]),
             )
-        else:
+        elif mode == "dirty":
             job.dirty = DirtyPaperSettings(
                 fuzz_level=int(self.dirty_fuzz.get()[0]),
                 reinforce_level=int(self.dirty_level.get()[0]),
+            )
+        else:
+            bg_color = "black" if self.removebg_color.get().startswith("Preto") else "white"
+            job.removebg = RemoveBgSettings(
+                background_color=bg_color,
+                remove_near=bool(self.removebg_near.get()),
+                swap_absolute_white=bool(self.removebg_swap_white.get()),
             )
         return job
 
@@ -472,13 +505,22 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+        # Reset the main-window grid: the build layout left row 2 and column 1 with
+        # weight=1, which would split the vertical/horizontal space and push the
+        # goodbye frame into the upper-left quadrant instead of centering it.
+        for r in range(0, 4):
+            self.grid_rowconfigure(r, weight=0)
+        for c in range(0, 2):
+            self.grid_columnconfigure(c, weight=0)
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
         bye = ctk.CTkFrame(self, fg_color="transparent")
-        bye.grid(row=0, column=0, sticky="nsew")
+        bye.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        # Top (0) and bottom (4) spacer rows take the slack so the content
+        # block (rows 1-3) stays centered vertically.
         bye.grid_rowconfigure(0, weight=1)
-        bye.grid_rowconfigure(3, weight=1)
+        bye.grid_rowconfigure(4, weight=1)
         bye.grid_columnconfigure(0, weight=1)
 
         logo_path = self._assets_dir() / "logo.png"
@@ -495,7 +537,7 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(bye, text="Até logo!", font=ctk.CTkFont(size=22, weight="bold")).grid(row=2, column=0)
         ctk.CTkLabel(bye, text="Obrigado por usar o Processador de DTFs.\nDesenvolvido por Tecnosup",
-                     text_color="#9AA0A6", justify="center").grid(row=3, column=0, pady=(6, 0), sticky="n")
+                     text_color="#9AA0A6", justify="center").grid(row=3, column=0, pady=(6, 0))
 
         self.update_idletasks()
         self.after(1500, self.destroy)

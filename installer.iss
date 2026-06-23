@@ -4,7 +4,7 @@
 
 #define AppName        "Processador de DTFs"
 #define AppPublisher   "Tecnosup"
-#define AppVersion     "1.0.3"
+#define AppVersion     "1.1.0"
 #define AppExeName     "Processador de DTFs.exe"
 #define SourceDir      "dist\Processador de DTFs"
 
